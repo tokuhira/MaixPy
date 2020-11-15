@@ -19,6 +19,7 @@
 
 #include "i2s.h"
 #include "dmac.h"
+#include "sysctl.h"
 
 #include "py/obj.h"
 #include "py/runtime.h"
@@ -52,13 +53,28 @@ STATIC mp_obj_t Maix_i2s_init_helper(Maix_i2s_obj_t *self, size_t n_args, const 
     enum 
     {
         ARG_sample_points,
+        ARG_pll2,
+        ARG_mclk,
     };
     static const mp_arg_t allowed_args[] = 
     {
         { MP_QSTR_sample_points, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 1024} },
+        { MP_QSTR_pll2, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_mclk, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
     };
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+
+    if (args[ARG_pll2].u_int != 0) // 262144000UL
+    {
+        sysctl_pll_set_freq(SYSCTL_PLL2, args[ARG_pll2].u_int);
+    }
+
+    if (args[ARG_mclk].u_int != 0) // 31 an 16384000 / (16000 * 256) = 4 ;
+    {
+        sysctl_clock_set_threshold(SYSCTL_THRESHOLD_I2S0_M + self->i2s_num, args[ARG_mclk].u_int);
+    }
 
     //set buffer len
     if(args[ARG_sample_points].u_int > MAX_SAMPLE_POINTS)
@@ -269,15 +285,15 @@ STATIC mp_obj_t Maix_i2s_record(size_t n_args, const mp_obj_t *pos_args, mp_map_
     }
 
     //record 
-    i2s_receive_data_dma(self->i2s_num, audio_obj->audio.buf, audio_obj->audio.points , DMAC_CHANNEL5);
-    // dmac_wait_idle(DMAC_CHANNEL5);//wait to finish recv
+    i2s_receive_data_dma(self->i2s_num, audio_obj->audio.buf, audio_obj->audio.points , DMAC_CHANNEL3);
+    // dmac_wait_idle(DMAC_CHANNEL3);//wait to finish recv
     return MP_OBJ_FROM_PTR(audio_obj);
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(Maix_i2s_record_obj,1,Maix_i2s_record);
 
 STATIC mp_obj_t Maix_i2s_wait_record(void*self_)
 {
-    dmac_wait_idle(DMAC_CHANNEL5);//wait to finish recv
+    dmac_wait_idle(DMAC_CHANNEL3);//wait to finish recv
     return mp_const_none;
 }
 MP_DEFINE_CONST_FUN_OBJ_1(Maix_i2s_wait_record_obj, Maix_i2s_wait_record);

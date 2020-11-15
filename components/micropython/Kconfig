@@ -51,8 +51,8 @@ menu "Micropython configurations"
 			bool "Minimum size OMV function (just disable omv advanced functions )"
 			default n
 		config MAIXPY_OMV_CONV_YUV_FAST
-			bool "Add YUV convert table, close this will reduce code but lower speed"
-			default y
+			bool "Add YUV convert table, speed up convert but more code"
+			default n
 		config MAIXPY_OMV_DOUBLE_BUFF
 			bool "Set double buffer for sensor(camera)"
 			default y
@@ -93,6 +93,23 @@ menu "Micropython configurations"
 			default n
 			select SPEECH_RECOGNIZER_ENABLE
 			
+		config MICROPY_SSL_ENABLE
+			bool "Enable Https SSL"
+			default n
+			
+	endmenu
+
+	menu "Builtin py modules configurations"
+
+		config MAIXPY_BUILTIN_PY_PYE
+			bool "Enable builtin py module pye (about 17KiB)"
+			default y
+		config MAIXPY_BUILTIN_PY_BOARD
+			bool "Enable builtin py module board"
+			default y
+		config MAIXPY_BUILTIN_PY_FPIOA_MANAGER
+			bool "Enable builtin py module fpioa_manager"
+			default y
 	endmenu
 
 	menu "Debug configurations"
