@@ -60,6 +60,7 @@ typedef enum _soft_i2c_device_number
     I2C_DEVICE_3 = 3,
     I2C_DEVICE_4,
     I2C_DEVICE_5,
+    I2C_DEVICE_SOFT,
     SOFT_I2C_DEVICE_MAX,
 } soft_i2c_device_number_t;
 
@@ -67,26 +68,33 @@ typedef enum _soft_i2c_device_number
 #define MP_MACHINE_I2C_FLAG_STOP (0x02)
 #define MP_MACHINE_I2C_FLAG_READ (0x01) // if not set then it's a write
 
+#define GPIOHS_OUT_HIGH(io) (*(volatile uint32_t *)0x3800100CU) |= (1 << (io))
+#define GPIOHS_OUT_LOW(io) (*(volatile uint32_t *) 0x3800100CU) &= ~(1 << (io))
+#define GET_GPIOHS_VAL(io) (((*(volatile uint32_t *)0x38001000U) >> (io)) & 1)
+
+// disable output and enable input
+#define GPIOHS_INPUT_EN(io) (*(volatile uint32_t *) 0x38001008U) &= ~(1 << (io)); \
+                            (*(volatile uint32_t *) 0x38001004U) |= (1 << (io));                     
+// disable input and enable output 
+#define GPIOHS_OUTPUT_EN(io) (*(volatile uint32_t *) 0x38001004U) &= ~(1 << (io)); \
+                             (*(volatile uint32_t *)0x38001008U) |= (1 << (io));
+
 STATIC void mp_hal_i2c_delay(machine_hard_i2c_obj_t *self) {
     // We need to use an accurate delay to get acceptable I2C
     // speeds (eg 1us should be not much more than 1us).
-    mp_hal_delay_us(self->us_delay);
+    usleep(self->us_delay);
 }
 
 STATIC int mp_hal_i2c_scl_release(machine_hard_i2c_obj_t *self) {
-    uint32_t count = self->timeout;
+    uint32_t count = self->timeout/8; // 8：一次传输 8 位数据，因此一次时钟周期最多等待超时时间的 1/8
 
-    // mp_hal_pin_od_high(self->pin_scl);
-    gpiohs_set_drive_mode(self->pin_scl, GPIO_DM_OUTPUT);
-    gpiohs_set_pin(self->pin_scl, 1);
+    GPIOHS_OUTPUT_EN(self->gpio_scl);
+    GPIOHS_OUT_HIGH(self->gpio_scl);
 
     mp_hal_i2c_delay(self);
     // For clock stretching, wait for the SCL pin to be released, with timeout.
-    gpiohs_set_drive_mode(self->pin_scl, GPIO_DM_INPUT);
-
-    // for (; mp_hal_pin_read(self->pin_scl) == 0 && count; --count) {
-    for (; gpiohs_get_pin(self->pin_scl) == 0 && count; --count) {
-
+    GPIOHS_INPUT_EN(self->gpio_scl);
+    for (; GET_GPIOHS_VAL(self->gpio_scl) == 0 && count; --count) {
         mp_hal_delay_us_fast(1);
     }
     if (count == 0) {
@@ -98,27 +106,26 @@ STATIC int mp_hal_i2c_scl_release(machine_hard_i2c_obj_t *self) {
 
 STATIC void mp_hal_i2c_scl_low(machine_hard_i2c_obj_t *self) {
     // mp_hal_pin_od_low(self->pin_scl);
-
-    gpiohs_set_drive_mode(self->pin_scl, GPIO_DM_OUTPUT);
-    gpiohs_set_pin(self->pin_scl, 0);
+    GPIOHS_OUTPUT_EN(self->gpio_scl);
+    GPIOHS_OUT_LOW(self->gpio_scl);
 }
 
 STATIC void mp_hal_i2c_sda_low(machine_hard_i2c_obj_t *self) {
     // mp_hal_pin_od_low(self->pin_sda);
-    gpiohs_set_pin(self->pin_sda, 0);
-    gpiohs_set_drive_mode(self->pin_sda, GPIO_DM_OUTPUT);
+    GPIOHS_OUT_LOW(self->gpio_sda);
+    GPIOHS_OUTPUT_EN(self->gpio_sda);
 }
 
 STATIC void mp_hal_i2c_sda_release(machine_hard_i2c_obj_t *self) {
     // mp_hal_pin_od_high(self->pin_sda);
-    gpiohs_set_pin(self->pin_sda, 1);
-    gpiohs_set_drive_mode(self->pin_sda, GPIO_DM_OUTPUT);
-    gpiohs_set_drive_mode(self->pin_sda, GPIO_DM_INPUT);
+    GPIOHS_OUT_HIGH(self->gpio_sda);
+    GPIOHS_OUTPUT_EN(self->gpio_sda);
+    GPIOHS_INPUT_EN(self->gpio_sda);
 }
 
-STATIC int mp_hal_i2c_sda_read(machine_hard_i2c_obj_t *self) {
-    gpiohs_set_drive_mode(self->pin_sda, GPIO_DM_INPUT);
-    return gpiohs_get_pin(self->pin_sda);
+STATIC  int mp_hal_i2c_sda_read(machine_hard_i2c_obj_t *self) {
+    GPIOHS_INPUT_EN(self->gpio_sda);
+    return GET_GPIOHS_VAL(self->gpio_sda);
     // return mp_hal_pin_read(self->pin_sda);
 }
 
@@ -329,6 +336,15 @@ STATIC bool check_addr_size(uint32_t addr_size)
     return true;
 }
 
+STATIC bool check_gpio(uint32_t scl, uint32_t sda)
+{
+    if(scl > 31)
+        return false;
+    if(sda > 31)
+        return false;
+    return true;
+}
+
 STATIC bool check_pin(uint32_t scl, uint32_t sda)
 {
     if(scl > 47)
@@ -487,8 +503,10 @@ STATIC mp_obj_t machine_i2c_init_helper(machine_hard_i2c_obj_t* self, mp_uint_t 
     enum { 
         ARG_id,
         ARG_mode,
-        ARG_scl,
-        ARG_sda,
+        ARG_pin_scl,
+        ARG_pin_sda,
+        ARG_gpio_scl,
+        ARG_gpio_sda,
         ARG_freq,
         ARG_timeout,
         ARG_addr,
@@ -502,6 +520,8 @@ STATIC mp_obj_t machine_i2c_init_helper(machine_hard_i2c_obj_t* self, mp_uint_t 
         { MP_QSTR_mode, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = MACHINE_I2C_MODE_MASTER} },
         { MP_QSTR_scl, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
         { MP_QSTR_sda, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_gscl, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_gsda, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
         { MP_QSTR_freq, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 400000} },
         { MP_QSTR_timeout, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 1000} },
         { MP_QSTR_addr, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
@@ -519,7 +539,7 @@ STATIC mp_obj_t machine_i2c_init_helper(machine_hard_i2c_obj_t* self, mp_uint_t 
     i2c_id = mp_obj_get_int(args[ARG_id].u_obj);
     mode = args[ARG_mode].u_int;
     freq = args[ARG_freq].u_int;
-    timeout = args[ARG_freq].u_int;
+    timeout = args[ARG_timeout].u_int;
     addr = args[ARG_addr].u_int;
     addr_size = args[ARG_addr_size].u_int;
     if(!check_i2c_device(i2c_id)) {
@@ -555,11 +575,21 @@ STATIC mp_obj_t machine_i2c_init_helper(machine_hard_i2c_obj_t* self, mp_uint_t 
         }
     }
 
-    if (args[ARG_scl].u_obj != MP_OBJ_NULL || args[ARG_sda].u_obj != MP_OBJ_NULL) {
-        if( !check_pin( mp_obj_get_int(args[ARG_scl].u_obj), mp_obj_get_int(args[ARG_sda].u_obj) ) )
+    if (args[ARG_pin_scl].u_obj != MP_OBJ_NULL || args[ARG_pin_sda].u_obj != MP_OBJ_NULL) {
+        if( !check_pin( mp_obj_get_int(args[ARG_pin_scl].u_obj), mp_obj_get_int(args[ARG_pin_sda].u_obj) ) )
             mp_raise_ValueError("[MAIXPY]I2C: pin(scl/sda) error!"); 
-        self->pin_scl = mp_obj_get_int(args[ARG_scl].u_obj);
-        self->pin_sda = mp_obj_get_int(args[ARG_sda].u_obj);
+        self->pin_scl = mp_obj_get_int(args[ARG_pin_scl].u_obj);
+        self->pin_sda = mp_obj_get_int(args[ARG_pin_sda].u_obj);
+        self->gpio_scl = self->pin_scl;
+        self->gpio_sda = self->pin_sda;
+    }
+    if (args[ARG_gpio_scl].u_obj != MP_OBJ_NULL || args[ARG_gpio_sda].u_obj != MP_OBJ_NULL) {
+        int gscl = mp_obj_get_int(args[ARG_gpio_scl].u_obj) - FUNC_GPIOHS0;
+        int gsda = mp_obj_get_int(args[ARG_gpio_sda].u_obj) - FUNC_GPIOHS0;
+        if( !check_gpio(gscl, gsda) )
+            mp_raise_ValueError("[MAIXPY]I2C: gpio(scl/sda) error!"); 
+        self->gpio_scl = gscl;
+        self->gpio_sda = gsda;
     }
 
     // set param
@@ -576,10 +606,9 @@ STATIC mp_obj_t machine_i2c_init_helper(machine_hard_i2c_obj_t* self, mp_uint_t 
 #if MICROPY_PY_MACHINE_SW_I2C
     if(self->i2c == (i2c_device_number_t)I2C_DEVICE_3 
         || self->i2c == (i2c_device_number_t)I2C_DEVICE_4 
-        || self->i2c == (i2c_device_number_t)I2C_DEVICE_5) {
+        || self->i2c == (i2c_device_number_t)I2C_DEVICE_5
+        || self->i2c == (i2c_device_number_t)I2C_DEVICE_SOFT) {
         self->mode = MACHINE_I2C_MODE_MASTER_SOFT;
-        if( mp_obj_get_int(args[ARG_scl].u_obj) >= 32 || mp_obj_get_int(args[ARG_sda].u_obj) >= 32)
-            mp_raise_ValueError("[MAIXPY]SW_I2C: pin(scl/sda) < GPIOHS_MAX_PINNO(32)!"); 
     }
 #endif
 
@@ -614,14 +643,15 @@ STATIC mp_obj_t machine_i2c_init_helper(machine_hard_i2c_obj_t* self, mp_uint_t 
         }
         // mp_hal_pin_open_drain(self->scl);
         // mp_hal_pin_open_drain(self->sda);
+
         // GPIO_DM_OUTPUT
-        fpioa_set_function(self->pin_scl, FUNC_GPIOHS0 + self->pin_scl); 
-        gpiohs_set_pin(self->pin_scl, 1);
-        gpiohs_set_drive_mode(self->pin_scl, GPIO_DM_OUTPUT);
+        int ret1 = fpioa_set_function(self->pin_scl, FUNC_GPIOHS0 + self->gpio_scl); 
+        gpiohs_set_pin(self->gpio_scl, 1);
+        gpiohs_set_drive_mode(self->gpio_scl, GPIO_DM_OUTPUT);
         
-        fpioa_set_function(self->pin_sda, FUNC_GPIOHS0 + self->pin_sda);
-        gpiohs_set_pin(self->pin_sda, 1);
-        gpiohs_set_drive_mode(self->pin_sda, GPIO_DM_OUTPUT);
+        int ret2 = fpioa_set_function(self->pin_sda, FUNC_GPIOHS0 + self->gpio_sda);
+        gpiohs_set_pin(self->gpio_sda, 1);
+        gpiohs_set_drive_mode(self->gpio_sda, GPIO_DM_OUTPUT);
         
         mp_hal_i2c_stop(self); // ignore error
 #endif
@@ -962,6 +992,7 @@ STATIC const mp_rom_map_elem_t machine_i2c_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_I2C3), MP_ROM_INT(I2C_DEVICE_3) },
     { MP_ROM_QSTR(MP_QSTR_I2C4), MP_ROM_INT(I2C_DEVICE_4) },
     { MP_ROM_QSTR(MP_QSTR_I2C5), MP_ROM_INT(I2C_DEVICE_5) },
+    { MP_ROM_QSTR(MP_QSTR_I2C_SOFT), MP_ROM_INT(I2C_DEVICE_SOFT) },
 #endif
 
     // slave mode event

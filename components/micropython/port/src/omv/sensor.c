@@ -27,6 +27,7 @@
 #include "mphalport.h"
 #include "ov3660.h"
 #include "ov5640.h"
+#include "ov5642.h"
 #include "Maix_config.h"
 
 extern volatile dvp_t *const dvp;
@@ -400,6 +401,10 @@ int sensro_ov_detect(sensor_t *sensor)
             //     printk("find ov7725\r\n");
             //     init_ret = ov7725_init(sensor);
             //     break;
+            case OV5642_ID:
+                mp_printf(&mp_plat_print, "[MAIXPY]: find ov5642\n");
+                init_ret = ov5642_init(sensor);
+                break;
             case OV7740_ID:
                 mp_printf(&mp_plat_print, "[MAIXPY]: find ov7740\n");
                 init_ret = ov7740_init(sensor);
@@ -824,9 +829,21 @@ int binocular_sensor_scan()
         {
             // Read OV sensor ID.
             uint8_t tmp;
-            cambus_readb(sensor.slv_addr, OV_CHIP_ID, &tmp);
+            uint8_t reg_width = cambus_reg_width();
+            uint16_t reg_addr, reg_addr2;
+            if (reg_width == 8)
+            {
+                reg_addr = OV_CHIP_ID;
+                reg_addr2 = OV_CHIP_ID2;
+            }
+            else
+            {
+                reg_addr = OV_CHIP_ID_16BIT;
+                reg_addr2 = OV_CHIP_ID2_16BIT;
+            }
+            cambus_readb(sensor.slv_addr, reg_addr, &tmp);
             sensor.chip_id = tmp << 8;
-            cambus_readb(sensor.slv_addr, OV_CHIP_ID2, &tmp);
+            cambus_readb(sensor.slv_addr, reg_addr2, &tmp);
             sensor.chip_id |= tmp;
             // Initialize sensor struct.
             switch (sensor.chip_id)
